@@ -160,7 +160,20 @@ class KubernetesLogModule(K8sAnsibleMixin):
             if not name:
                 self.fail(msg='name must be provided for resources that do not support the log subresource')
             instance = resource.get(name=name, namespace=namespace)
-            label_selector = ','.join(self.extract_selectors(instance))
+            try:
+                selectors = self.extract_selectors(instance)
+            except ValueError as e:
+                self.fail(' '.join(e.args))
+
+            if not selectors:
+                self.fail('No Pod selector was found on the {0}.{1} with name {2} in namespace {3}'.format(
+                    '/'.join(instance.group, instance.apiVersion),
+                    instance.kind,
+                    instance.metadata.name,
+                    instance.metadata.namespace))
+
+            label_selector = ','.join(selectors)
+
             resource = v1_pods
 
         if label_selector:
@@ -183,43 +196,6 @@ class KubernetesLogModule(K8sAnsibleMixin):
         ))
 
         self.exit_json(changed=False, log=log, log_lines=log.split('\n'))
-
-    def extract_selectors(self, instance):
-        # Parses selectors on an object based on the specifications documented here:
-        # https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
-        selectors = []
-        if not instance.spec.selector:
-            self.fail(msg='{0} {1} does not support the log subresource directly, and no Pod selector was found on the object'.format(
-                      '/'.join(instance.group, instance.apiVersion), instance.kind))
-
-        if not (instance.spec.selector.matchLabels or instance.spec.selector.matchExpressions):
-            # A few resources (like DeploymentConfigs) just use a simple key:value style instead of supporting expressions
-            for k, v in dict(instance.spec.selector).items():
-                selectors.append('{0}={1}'.format(k, v))
-            return selectors
-
-        if instance.spec.selector.matchLabels:
-            for k, v in dict(instance.spec.selector.matchLabels).items():
-                selectors.append('{0}={1}'.format(k, v))
-
-        if instance.spec.selector.matchExpressions:
-            for expression in instance.spec.selector.matchExpressions:
-                operator = expression.operator
-
-                if operator == 'Exists':
-                    selectors.append(expression.key)
-                elif operator == 'DoesNotExist':
-                    selectors.append('!{0}'.format(expression.key))
-                elif operator in ['In', 'NotIn']:
-                    selectors.append('{key} {operator} {values}'.format(
-                        key=expression.key,
-                        operator=operator.lower(),
-                        values='({0})'.format(', '.join(expression.values))
-                    ))
-                else:
-                    self.fail(msg='The k8s_log module does not support the {0} matchExpression operator'.format(operator.lower()))
-
-        return selectors
 
 
 def serialize_log(response):
