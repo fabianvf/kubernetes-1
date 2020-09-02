@@ -147,6 +147,12 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
     connection_plugin = 'community.kubernetes.kubectl'
     transport = 'kubectl'
 
+    PARENT_RESOURCES = [
+        {'api_version': 'apps/v1', 'kind': 'Deployment'},
+        {'api_version': 'apps/v1', 'kind': 'DaemonSet'},
+        {'api_version': 'apps/v1', 'kind': 'StatefulSet'},
+    ]
+
     def parse(self, inventory, loader, path, cache=True):
         super(InventoryModule, self).parse(inventory, loader, path)
         cache_key = self._get_cache_prefix(path)
@@ -221,9 +227,9 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
     def get_pods_from_parents(self, client, name, namespace, namespace_group):
 
         v1_pods = client.resources.get(api_version='v1', kind='Pod')
-        for kind in ['Deployment', 'Daemonset', 'StatefulSet']:
+        for item in self.PARENT_RESOURCES:
             try:
-                resource = client.resources.get(api_version='apps/v1', kind=kind)
+                resource = client.resources.get(api_version=item['api_version'], kind=item['kind'])
                 instances = resource.get(namespace=namespace)
             except Exception:
                 # TODO Could be expected due to RBAC or odd cluster, maybe should log a warning or something?
@@ -245,7 +251,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
                     self.display.debug(exc)
                     raise K8sInventoryException('Error fetching Pod list: %s' % format_dynamic_api_exc(exc))
 
-                instance_group = self.sanitize('{0}_{1}_{2}'.format(namespace_group, kind.lower(), instance.metadata.name))
+                instance_group = self.sanitize('{0}_{1}_{2}'.format(namespace_group, item['kind'].lower(), instance.metadata.name))
                 self.inventory.add_group(instance_group)
                 self.inventory.add_child(namespace_group, instance_group)
 
