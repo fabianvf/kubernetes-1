@@ -114,11 +114,11 @@ connections:
     context: 'awx/192-168-64-4:8443/developer'
 '''
 
-import re
 import json
 
-from ansible_collections.community.kubernetes.plugins.module_utils.common import K8sAnsibleMixin, HAS_K8S_MODULE_HELPER, k8s_import_exception
+from ansible.errors import AnsibleError
 from ansible.plugins.inventory import BaseInventoryPlugin, Constructable, Cacheable
+from ansible_collections.community.kubernetes.plugins.module_utils.common import K8sAnsibleMixin, HAS_K8S_MODULE_HELPER, k8s_import_exception
 
 try:
     from openshift.dynamic.exceptions import DynamicApiError
@@ -204,6 +204,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
 
                 self.get_pods_for_namespace(client, name, namespace, namespace_group)
                 self.get_pods_from_parents(client, name, namespace, namespace_group)
+                self.get_services_for_namespace(client, name, namespace, namespace_group)
 
     @staticmethod
     def get_default_host_name(host):
@@ -253,6 +254,10 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
                     self.add_pod_to_groups(pod, [instance_group])
 
     def get_pods_for_namespace(self, client, name, namespace, namespace_group):
+        # This should be removed for 2.0
+        legacy_pod_group = "{0}_pods".format(namespace_group)
+        self.inventory.add_child(namespace_group, legacy_pod_group)
+
         v1_pod = client.resources.get(api_version='v1', kind='Pod')
         try:
             obj = v1_pod.get(namespace=namespace)
@@ -261,7 +266,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
             raise K8sInventoryException('Error fetching Pod list: %s' % format_dynamic_api_exc(exc))
 
         for pod in obj.items:
-            pod_groups = [namespace_group]
+            pod_groups = [namespace_group, legacy_pod_group]
             if pod.metadata.labels:
                 # create a group for each label_value
                 for key, value in pod.metadata.labels:
@@ -320,3 +325,76 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
                                         container.name)
             self.inventory.set_variable(container_name, 'ansible_{0}_namespace'.format(self.transport),
                                         namespace)
+
+    # This should be removed before 2.0
+    def get_services_for_namespace(self, client, name, namespace, namespace_group):
+        v1_service = client.resources.get(api_version='v1', kind='Service')
+        try:
+            obj = v1_service.get(namespace=namespace)
+        except DynamicApiError as exc:
+            self.display.debug(exc)
+            raise K8sInventoryException('Error fetching Service list: %s' % format_dynamic_api_exc(exc))
+
+        namespace_services_group = '{0}_services'.format(namespace_group)
+
+        self.inventory.add_group(namespace_services_group)
+        self.inventory.add_child(namespace_group, namespace_services_group)
+
+        for service in obj.items:
+            service_name = service.metadata.name
+            service_labels = {} if not service.metadata.labels else dict(service.metadata.labels)
+            service_annotations = {} if not service.metadata.annotations else dict(service.metadata.annotations)
+
+            self.inventory.add_host(service_name)
+
+            if service.metadata.labels:
+                # create a group for each label_value
+                for key, value in service.metadata.labels:
+                    group_name = 'label_{0}_{1}'.format(key, value)
+                    self.inventory.add_group(group_name)
+                    self.inventory.add_child(group_name, service_name)
+
+            try:
+                self.inventory.add_child(namespace_services_group, service_name)
+            except AnsibleError:
+                raise
+
+            ports = [{'name': port.name,
+                      'port': port.port,
+                      'protocol': port.protocol,
+                      'targetPort': port.targetPort,
+                      'nodePort': port.nodePort} for port in service.spec.ports or []]
+
+            # add hostvars
+            self.inventory.set_variable(service_name, 'object_type', 'service')
+            self.inventory.set_variable(service_name, 'labels', service_labels)
+            self.inventory.set_variable(service_name, 'annotations', service_annotations)
+            self.inventory.set_variable(service_name, 'cluster_name', service.metadata.clusterName)
+            self.inventory.set_variable(service_name, 'ports', ports)
+            self.inventory.set_variable(service_name, 'type', service.spec.type)
+            self.inventory.set_variable(service_name, 'self_link', service.metadata.selfLink)
+            self.inventory.set_variable(service_name, 'resource_version', service.metadata.resourceVersion)
+            self.inventory.set_variable(service_name, 'uid', service.metadata.uid)
+
+            if service.spec.externalTrafficPolicy:
+                self.inventory.set_variable(service_name, 'external_traffic_policy',
+                                            service.spec.externalTrafficPolicy)
+            if service.spec.externalIPs:
+                self.inventory.set_variable(service_name, 'external_ips', service.spec.externalIPs)
+
+            if service.spec.externalName:
+                self.inventory.set_variable(service_name, 'external_name', service.spec.externalName)
+
+            if service.spec.healthCheckNodePort:
+                self.inventory.set_variable(service_name, 'health_check_node_port',
+                                            service.spec.healthCheckNodePort)
+            if service.spec.loadBalancerIP:
+                self.inventory.set_variable(service_name, 'load_balancer_ip',
+                                            service.spec.loadBalancerIP)
+            if service.spec.selector:
+                self.inventory.set_variable(service_name, 'selector', dict(service.spec.selector))
+
+            if hasattr(service.status.loadBalancer, 'ingress') and service.status.loadBalancer.ingress:
+                load_balancer = [{'hostname': ingress.hostname,
+                                  'ip': ingress.ip} for ingress in service.status.loadBalancer.ingress]
+                self.inventory.set_variable(service_name, 'load_balancer', load_balancer)
