@@ -194,10 +194,10 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
             else:
                 namespaces = self.get_available_namespaces(client)
 
-            sanitized_name = self.sanitize(name)
+            sanitized_name = self._sanitize_group_name(name)
             self.inventory.add_group(sanitized_name)
             for namespace in namespaces:
-                namespace_group = self.sanitize('namespace_{0}'.format(namespace))
+                namespace_group = self._sanitize_group_name('namespace_{0}'.format(namespace))
 
                 self.inventory.add_group(namespace_group)
                 self.inventory.add_child(sanitized_name, namespace_group)
@@ -208,12 +208,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
     @staticmethod
     def get_default_host_name(host):
         return host.replace('https://', '').replace('http://', '').replace('.', '-').replace(':', '_')
-
-    @staticmethod
-    def sanitize(name):
-        if name[:1].isdigit():
-            name = '_' + name
-        return re.sub('[^0-9a-zA-Z_]', '_', name)
 
     def get_available_namespaces(self, client):
         v1_namespace = client.resources.get(api_version='v1', kind='Namespace')
@@ -251,7 +245,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
                     self.display.debug(exc)
                     raise K8sInventoryException('Error fetching Pod list: %s' % format_dynamic_api_exc(exc))
 
-                instance_group = self.sanitize('{0}_{1}_{2}'.format(namespace_group, item['kind'].lower(), instance.metadata.name))
+                instance_group = self._sanitize_group_name('{0}_{1}_{2}'.format(namespace_group, item['kind'].lower(), instance.metadata.name))
                 self.inventory.add_group(instance_group)
                 self.inventory.add_child(namespace_group, instance_group)
 
@@ -271,7 +265,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable, K8sAnsibleM
             if pod.metadata.labels:
                 # create a group for each label_value
                 for key, value in pod.metadata.labels:
-                    group_name = self.sanitize('label_{0}_{1}'.format(key, value))
+                    group_name = self._sanitize_group_name('label_{0}_{1}'.format(key, value))
                     if group_name not in pod_groups:
                         pod_groups.append(group_name)
                     self.inventory.add_group(group_name)
